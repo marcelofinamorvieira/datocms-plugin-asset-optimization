@@ -1,8 +1,9 @@
 /**
  * DatoCMS Asset Replacement Utility
  * 
- * This module provides a function to replace existing assets in DatoCMS
- * with new optimized versions from a URL.
+ * This module provides functions to replace existing assets in DatoCMS
+ * with new optimized versions from a URL, with support for parallel processing
+ * and rate limiting.
  * 
  * @module assetReplacer
  */
@@ -50,6 +51,29 @@ interface JobResultResponse {
       };
     };
   };
+}
+
+/**
+ * Interface for asset replacement task
+ */
+interface AssetReplacementTask {
+  assetId: string;
+  newImageUrl: string;
+  filename?: string;
+  retryCount: number;
+  lastError?: Error;
+}
+
+/**
+ * Configuration for the asset replacement
+ */
+interface AssetReplacerConfig {
+  apiToken: string;
+  environment: string;
+  concurrency?: number; // Number of concurrent replacements
+  initialRetryDelay?: number; // Initial retry delay in ms
+  maxRetryDelay?: number; // Maximum retry delay in ms
+  retryBackoffFactor?: number; // Multiplier for each retry
 }
 
 /**
@@ -120,24 +144,60 @@ async function waitForJobCompletion(
 }
 
 /**
+ * Sleep for a specified duration
+ * 
+ * @param {number} ms - Time to sleep in milliseconds
+ * @returns {Promise<void>}
+ */
+const sleep = (ms: number): Promise<void> => new Promise(resolve => setTimeout(resolve, ms));
+
+/**
+ * Calculate exponential backoff delay for retries
+ * 
+ * @param {number} retryCount - Current retry attempt number
+ * @param {number} initialDelay - Initial delay in milliseconds
+ * @param {number} maxDelay - Maximum delay in milliseconds
+ * @param {number} backoffFactor - Multiplier for each retry
+ * @returns {number} Delay in milliseconds for the next retry
+ */
+const calculateBackoff = (
+  retryCount: number,
+  initialDelay: number,
+  maxDelay: number,
+  backoffFactor: number
+): number => {
+  const delay = initialDelay * (backoffFactor ** retryCount);
+  return Math.min(delay, maxDelay);
+};
+
+/**
  * Replaces an existing asset in DatoCMS with a new image from a URL.
+ * Includes retries for rate limiting (429) errors.
  * 
  * @param {string} assetId - The ID of the asset to replace
  * @param {string} newImageUrl - URL of the new image to replace the original with
  * @param {string} apiToken - DatoCMS API token
  * @param {string} environment - Environment for the DatoCMS API call
  * @param {string} [filename] - Optional custom filename for the replacement
+ * @param {number} [retryCount=0] - Current retry attempt
+ * @param {number} [initialRetryDelay=1000] - Initial retry delay in ms
+ * @param {number} [maxRetryDelay=60000] - Maximum retry delay in ms
+ * @param {number} [retryBackoffFactor=2] - Backoff factor for retries
  * @returns {Promise<AssetUpdateResponse>} The updated asset object from DatoCMS
- * @throws {Error} If the replacement fails
+ * @throws {Error} If the replacement fails after all retries
  */
 async function replaceAssetFromUrl(
   assetId: string,
   newImageUrl: string,
   apiToken: string,
   environment: string,
-  filename?: string
+  filename?: string,
+  retryCount = 0,
+  initialRetryDelay = 1000,
+  maxRetryDelay = 60000,
+  retryBackoffFactor = 2
 ): Promise<AssetUpdateResponse> {
-  console.log(`Replacing DatoCMS asset ID ${assetId} with image from URL: ${newImageUrl}`);
+  console.log(`Replacing DatoCMS asset ID ${assetId} with image from URL: ${newImageUrl}${retryCount > 0 ? ` (retry ${retryCount})` : ''}`);
   
   if (!assetId || !apiToken) {
     throw new Error('Missing required parameters: assetId and apiToken are required');
@@ -166,6 +226,33 @@ async function replaceAssetFromUrl(
         }
       })
     });
+
+    // Handle rate limiting specifically
+    if (uploadRequestResponse.status === 429) {
+      const retryAfterHeader = uploadRequestResponse.headers.get('Retry-After');
+      const retryAfterSeconds = retryAfterHeader ? Number.parseInt(retryAfterHeader, 10) : 0;
+      
+      // Use the Retry-After header if available, or calculate backoff
+      const delayMs = retryAfterSeconds > 0 
+        ? retryAfterSeconds * 1000 
+        : calculateBackoff(retryCount, initialRetryDelay, maxRetryDelay, retryBackoffFactor);
+      
+      console.log(`Rate limit exceeded. Retrying after ${delayMs}ms`);
+      await sleep(delayMs);
+      
+      // Retry with incremented retry count
+      return replaceAssetFromUrl(
+        assetId, 
+        newImageUrl, 
+        apiToken, 
+        environment, 
+        filename, 
+        retryCount + 1,
+        initialRetryDelay,
+        maxRetryDelay,
+        retryBackoffFactor
+      );
+    }
 
     if (!uploadRequestResponse.ok) {
       const errorText = await uploadRequestResponse.text();
@@ -221,6 +308,33 @@ async function replaceAssetFromUrl(
       })
     });
 
+    // Handle rate limiting specifically for this step too
+    if (updateResponse.status === 429) {
+      const retryAfterHeader = updateResponse.headers.get('Retry-After');
+      const retryAfterSeconds = retryAfterHeader ? Number.parseInt(retryAfterHeader, 10) : 0;
+      
+      // Use the Retry-After header if available, or calculate backoff
+      const delayMs = retryAfterSeconds > 0 
+        ? retryAfterSeconds * 1000 
+        : calculateBackoff(retryCount, initialRetryDelay, maxRetryDelay, retryBackoffFactor);
+      
+      console.log(`Rate limit exceeded during asset update. Retrying after ${delayMs}ms`);
+      await sleep(delayMs);
+      
+      // Retry with incremented retry count
+      return replaceAssetFromUrl(
+        assetId, 
+        newImageUrl, 
+        apiToken, 
+        environment, 
+        filename, 
+        retryCount + 1,
+        initialRetryDelay,
+        maxRetryDelay,
+        retryBackoffFactor
+      );
+    }
+
     if (!updateResponse.ok) {
       const errorText = await updateResponse.text();
       throw new Error(`Failed to update asset metadata: ${updateResponse.status} ${errorText}`);
@@ -248,9 +362,166 @@ async function replaceAssetFromUrl(
     console.log('Asset replaced successfully:', responseData);
     return responseData as AssetUpdateResponse;
   } catch (error) {
+    // For rate limit errors, we already handle them specifically above
+    // For other errors, decide whether to retry based on retry count
+    if (error instanceof Error && error.message.includes('API error') && retryCount < 5) {
+      const delayMs = calculateBackoff(retryCount, initialRetryDelay, maxRetryDelay, retryBackoffFactor);
+      console.error(`Error replacing asset: ${error.message}. Retrying in ${delayMs}ms...`);
+      await sleep(delayMs);
+      
+      // Retry with incremented retry count
+      return replaceAssetFromUrl(
+        assetId, 
+        newImageUrl, 
+        apiToken, 
+        environment, 
+        filename, 
+        retryCount + 1,
+        initialRetryDelay,
+        maxRetryDelay,
+        retryBackoffFactor
+      );
+    }
+    
     console.error('Error replacing asset:', error);
     throw error;
   }
 }
 
+/**
+ * Asset Replacer class for handling parallel replacements with rate limiting
+ */
+class AssetReplacer {
+  private queue: AssetReplacementTask[] = [];
+  private activeCount = 0;
+  private config: AssetReplacerConfig;
+  private processing = false;
+  private completedCount = 0;
+  private failedCount = 0;
+  private resolvePromise: ((value: { succeeded: number; failed: number }) => void) | null = null;
+
+  /**
+   * Creates a new AssetReplacer instance
+   * 
+   * @param {AssetReplacerConfig} config - Configuration for asset replacement
+   */
+  constructor(config: AssetReplacerConfig) {
+    this.config = {
+      ...config,
+      concurrency: config.concurrency || 3, // Default to 3 concurrent operations
+      initialRetryDelay: config.initialRetryDelay || 1000,
+      maxRetryDelay: config.maxRetryDelay || 60000,
+      retryBackoffFactor: config.retryBackoffFactor || 2
+    };
+  }
+
+  /**
+   * Add a task to the replacement queue
+   * 
+   * @param {string} assetId - The ID of the asset to replace
+   * @param {string} newImageUrl - URL of the new image
+   * @param {string} [filename] - Optional custom filename
+   */
+  addTask(assetId: string, newImageUrl: string, filename?: string): void {
+    this.queue.push({
+      assetId,
+      newImageUrl,
+      filename,
+      retryCount: 0
+    });
+  }
+
+  /**
+   * Process a single task from the queue
+   * 
+   * @param {AssetReplacementTask} task - The task to process
+   */
+  private async processTask(task: AssetReplacementTask): Promise<void> {
+    try {
+      await replaceAssetFromUrl(
+        task.assetId,
+        task.newImageUrl,
+        this.config.apiToken,
+        this.config.environment,
+        task.filename,
+        task.retryCount,
+        this.config.initialRetryDelay,
+        this.config.maxRetryDelay,
+        this.config.retryBackoffFactor
+      );
+      this.completedCount++;
+    } catch (error) {
+      console.error(`Failed to replace asset ${task.assetId} after multiple retries:`, error);
+      this.failedCount++;
+    } finally {
+      this.activeCount--;
+      this.processQueue();
+    }
+  }
+
+  /**
+   * Process the queue of asset replacement tasks
+   */
+  private processQueue(): void {
+    // Check if we need to resolve the completion promise
+    if (this.queue.length === 0 && this.activeCount === 0 && this.resolvePromise) {
+      this.resolvePromise({ 
+        succeeded: this.completedCount, 
+        failed: this.failedCount 
+      });
+      this.resolvePromise = null;
+      this.processing = false;
+      return;
+    }
+
+    // Start processing tasks up to the concurrency limit
+    while (this.queue.length > 0 && this.activeCount < (this.config.concurrency || 3)) {
+      const task = this.queue.shift();
+      if (task) {
+        this.activeCount++;
+        this.processTask(task);
+      }
+    }
+  }
+
+  /**
+   * Start processing the queue and return a promise that resolves when all tasks are complete
+   * 
+   * @returns {Promise<{succeeded: number, failed: number}>} Results of the operation
+   */
+  start(): Promise<{succeeded: number, failed: number}> {
+    if (this.processing) {
+      return Promise.reject(new Error('Asset replacer is already processing'));
+    }
+
+    this.processing = true;
+    this.completedCount = 0;
+    this.failedCount = 0;
+
+    return new Promise((resolve) => {
+      this.resolvePromise = resolve;
+      this.processQueue();
+    });
+  }
+
+  /**
+   * Get the current status of the processing
+   * 
+   * @returns {{queued: number, active: number, completed: number, failed: number}} Status counts
+   */
+  getStatus(): {queued: number, active: number, completed: number, failed: number} {
+    return {
+      queued: this.queue.length,
+      active: this.activeCount,
+      completed: this.completedCount,
+      failed: this.failedCount
+    };
+  }
+}
+
+// Export types separately to avoid 'isolatedModules' errors
+export type { AssetReplacerConfig, AssetReplacementTask };
+
+// Export the functions and classes
+export { AssetReplacer };
 export default replaceAssetFromUrl;

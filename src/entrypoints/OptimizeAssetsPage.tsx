@@ -17,7 +17,6 @@ import AssetList from '../components/asset-optimization/AssetList';
 import type { AssetOptimizerResult, Asset, OptimizationSettings, OptimizedAsset, ProcessedAsset } from '../utils/optimizationUtils';
 import { defaultSettings, getOptimizationParams } from '../utils/optimizationUtils';
 import { formatFileSize } from '../utils/formatters';
-import replaceAssetFromUrl from '../utils/assetReplacer';
 
 /**
  * Convert DatoCMS Upload object to our internal Asset type
@@ -63,6 +62,119 @@ function assetToOptimizedAsset(asset: Asset, originalSize: number, optimizedSize
   };
 }
 
+/**
+ * Sleep for a specified duration
+ * 
+ * @param {number} ms - Time to sleep in milliseconds
+ * @returns {Promise<void>}
+ */
+const sleep = (ms: number): Promise<void> => new Promise(resolve => setTimeout(resolve, ms));
+
+/**
+ * Process a single asset for optimization or preview
+ * 
+ * @param asset Asset to process
+ * @param settings Optimization settings
+ * @param addLog Function to add logs
+ * @param addSizeComparisonLog Function to add size comparison logs
+ * @param isPreview Whether this is a preview operation
+ * @param apiToken DatoCMS API token
+ * @param environment DatoCMS environment
+ * @returns Result of processing the asset
+ */
+async function processAsset(
+  asset: Asset,
+  settings: OptimizationSettings,
+  addLog: (message: string) => void,
+  addSizeComparisonLog: (assetPath: string, originalSize: number, optimizedSize: number) => void,
+  isPreview: boolean,
+  apiToken?: string,
+  environment?: string
+): Promise<{
+  status: 'optimized' | 'skipped' | 'failed';
+  asset: Asset;
+  optimizedSize?: number;
+  error?: string;
+}> {
+  try {
+    addLog(`Processing asset: ${asset.path} (${formatFileSize(asset.size)})`);
+    
+    // Determine optimization parameters based on image type and size
+    const optimizationParams = getOptimizationParams(asset, settings);
+    
+    if (!optimizationParams) {
+      addLog(`Skipping asset ${asset.path}: No suitable optimization parameters found.`);
+      return { status: 'skipped', asset };
+    }
+    
+    // Create URL with optimization parameters
+    const optimizedUrl = `${asset.url}${optimizationParams}`;
+    addLog(`Optimizing with parameters: ${optimizationParams}`);
+    
+    // Fetch the optimized image
+    const response = await fetch(optimizedUrl);
+    if (!response.ok) {
+      throw new Error(`Failed to fetch optimized image: ${response.statusText}`);
+    }
+    
+    const optimizedImageBlob = await response.blob();
+    addLog(`Optimized image size: ${formatFileSize(optimizedImageBlob.size)}`);
+    
+    // Skip if optimized image is not smaller by the minimum reduction percentage
+    const minimumSizeThreshold = asset.size * (1 - settings.minimumReduction / 100);
+    if (optimizedImageBlob.size > minimumSizeThreshold) {
+      addLog(`Optimization not significant enough for ${asset.path}. Skipping.`);
+      return { status: 'skipped', asset };
+    }
+    
+    // If this is just a preview, don't actually replace the asset
+    if (isPreview) {
+      addSizeComparisonLog(asset.path, asset.size, optimizedImageBlob.size);
+      return { 
+        status: 'optimized', 
+        asset, 
+        optimizedSize: optimizedImageBlob.size
+      };
+    }
+    
+    // For actual optimization, replace the asset
+    if (!apiToken) {
+      throw new Error('API token is required for asset replacement');
+    }
+    
+    // Use our asset replacement utility to properly replace the asset
+    addLog(`Replacing asset ${asset.path}...`);
+    
+    // Import dynamically to avoid circular dependency
+    // We need to use default export directly for backward compatibility
+    const { default: replaceAssetFromUrl } = await import('../utils/assetReplacer');
+    
+    await replaceAssetFromUrl(
+      asset.id,
+      optimizedUrl,
+      apiToken,
+      environment || 'master',
+      asset.basename
+    );
+    
+    addSizeComparisonLog(asset.path, asset.size, optimizedImageBlob.size);
+    addLog(`Successfully replaced asset ${asset.path}`);
+    
+    return { 
+      status: 'optimized', 
+      asset, 
+      optimizedSize: optimizedImageBlob.size
+    };
+  } catch (error) {
+    addLog(`Error ${isPreview ? 'optimizing' : 'replacing'} asset ${asset.path}: ${error instanceof Error ? error.message : String(error)}`);
+    return { 
+      status: 'failed', 
+      asset, 
+      error: error instanceof Error ? error.message : String(error)
+    };
+  }
+}
+
 type Props = {
   ctx: RenderPageCtx;
 };
@@ -87,6 +199,8 @@ const OptimizeAssetsPage = ({ ctx }: Props) => {
   const [settings, setSettings] = useState<OptimizationSettings>({ ...defaultSettings });
   const [currentAsset, setCurrentAsset] = useState<Asset | undefined>(undefined);
   const [selectedCategory, setSelectedCategory] = useState<'optimized' | 'skipped' | 'failed' | null>(null);
+  // Concurrency control - default to 10 concurrent operations
+  const concurrency = 10;
 
   // Load saved settings from plugin parameters on component mount
   useEffect(() => {
@@ -151,6 +265,123 @@ const OptimizeAssetsPage = ({ ctx }: Props) => {
   };
 
   /**
+   * Process assets in parallel using a task queue
+   * 
+   * @param assets Assets to process
+   * @param isPreview Whether this is a preview operation
+   * @returns Results of processing
+   */
+  const processAssetsInParallel = async (assets: Asset[], isPreview: boolean) => {
+    // Initialize counters and arrays for optimization results
+    let optimized = 0;
+    let skipped = 0;
+    let failed = 0;
+    let processed = 0;
+    const optimizedAssets: OptimizedAsset[] = [];
+    const skippedAssets: ProcessedAsset[] = [];
+    const failedAssets: ProcessedAsset[] = [];
+    let originalSizeTotal = 0;
+    let optimizedSizeTotal = 0;
+    
+    // Set initial state
+    setTotal(assets.length);
+    setCurrent(0);
+    
+    // Create a queue of assets to process
+    const queue = [...assets];
+    let activeCount = 0;
+    
+    // Get API token for actual optimization (not needed for preview)
+    const apiToken = isPreview ? undefined : ctx.currentUserAccessToken;
+    
+    const updateProgress = () => {
+      processed++;
+      setCurrent(processed);
+    };
+    
+    // Process the queue until empty
+    const processQueue = async () => {
+      const promises: Promise<void>[] = [];
+      
+      // Start processing assets up to the concurrency limit
+      while (queue.length > 0 && activeCount < concurrency) {
+        const asset = queue.shift();
+        if (!asset) continue;
+        
+        activeCount++;
+        originalSizeTotal += asset.size;
+        setCurrentAsset(asset);
+        
+        const processPromise = (async () => {
+          try {
+            // Add a small delay between tasks to avoid overwhelming the API
+            if (activeCount > 1) {
+              await sleep(300);
+            }
+            
+            const result = await processAsset(
+              asset,
+              settings,
+              addLog,
+              addSizeComparisonLog,
+              isPreview,
+              apiToken || undefined,
+              ctx.environment
+            );
+            
+            // Handle result based on status
+            if (result.status === 'optimized' && result.optimizedSize) {
+              optimizedAssets.push(assetToOptimizedAsset(asset, asset.size, result.optimizedSize));
+              optimizedSizeTotal += result.optimizedSize;
+              optimized++;
+            } else if (result.status === 'skipped') {
+              skippedAssets.push(assetToProcessedAsset(asset));
+              skipped++;
+            } else {
+              failedAssets.push(assetToProcessedAsset(asset));
+              failed++;
+            }
+          } catch (error) {
+            // Handle any unexpected errors
+            addLog(`Unexpected error processing ${asset.path}: ${error instanceof Error ? error.message : String(error)}`);
+            failedAssets.push(assetToProcessedAsset(asset));
+            failed++;
+          } finally {
+            updateProgress();
+            activeCount--;
+          }
+        })();
+        
+        promises.push(processPromise);
+      }
+      
+      // Wait for all active processes to complete
+      await Promise.all(promises);
+      
+      // If there are still items in the queue, continue processing
+      if (queue.length > 0) {
+        return processQueue();
+      }
+    };
+    
+    // Start the parallel processing
+    await processQueue();
+    
+    // Return the results
+    return {
+      optimized,
+      skipped,
+      failed,
+      totalAssets: assets.length,
+      optimizedAssets,
+      skippedAssets,
+      failedAssets,
+      originalSizeTotal,
+      optimizedSizeTotal
+    };
+  };
+
+  /**
    * Start a preview of the optimization process (no actual asset replacement)
    */
   const startPreview = async () => {
@@ -197,89 +428,27 @@ const OptimizeAssetsPage = ({ ctx }: Props) => {
       
       addLog(`Found ${assetCount} assets larger than ${settings.largeAssetThreshold}MB.`);
       addLog(`Found ${optimizableAssets.length} optimizable images.`);
-      setTotal(optimizableAssets.length);
       
-      // Initialize counters and arrays for optimization results
-      let optimized = 0;
-      let skipped = 0;
-      let failed = 0;
-      const optimizedAssets: OptimizedAsset[] = [];
-      const skippedAssets: ProcessedAsset[] = [];
-      const failedAssets: ProcessedAsset[] = [];
-      let originalSizeTotal = 0;
-      let optimizedSizeTotal = 0;
+      // Process assets in parallel
+      const processResult = await processAssetsInParallel(optimizableAssets, true);
       
-      // Process each asset that needs optimization
-      for (let i = 0; i < optimizableAssets.length; i++) {
-        const asset = optimizableAssets[i];
-        setCurrent(i + 1);
-        setCurrentAsset(asset);
-        
-        try {
-          addLog(`Processing asset: ${asset.path} (${formatFileSize(asset.size)})`);
-          originalSizeTotal += asset.size;
-          
-          // Determine optimization parameters based on image type and size
-          const optimizationParams = getOptimizationParams(asset, settings);
-          
-          if (!optimizationParams) {
-            addLog(`Skipping asset ${asset.path}: No suitable optimization parameters found.`);
-            skippedAssets.push(assetToProcessedAsset(asset));
-            skipped++;
-            continue;
-          }
-          
-          // Create URL with optimization parameters
-          const optimizedUrl = `${asset.url}${optimizationParams}`;
-          addLog(`Optimizing with parameters: ${optimizationParams}`);
-          
-          // Fetch the optimized image
-          const response = await fetch(optimizedUrl);
-          if (!response.ok) {
-            throw new Error(`Failed to fetch optimized image: ${response.statusText}`);
-          }
-          
-          const optimizedImageBlob = await response.blob();
-          addLog(`Optimized image size: ${formatFileSize(optimizedImageBlob.size)}`);
-          
-          // Skip if optimized image is not smaller by the minimum reduction percentage
-          const minimumSizeThreshold = asset.size * (1 - settings.minimumReduction / 100);
-          if (optimizedImageBlob.size > minimumSizeThreshold) {
-            addLog(`Optimization not significant enough for ${asset.path}. Skipping.`);
-            skippedAssets.push(assetToProcessedAsset(asset));
-            skipped++;
-            continue;
-          }
-          
-          // Add to optimized assets list
-          optimizedAssets.push(assetToOptimizedAsset(asset, asset.size, optimizedImageBlob.size));
-          optimizedSizeTotal += optimizedImageBlob.size;
-          optimized++;
-          
-          // Log the size comparison information
-          addSizeComparisonLog(asset.path, asset.size, optimizedImageBlob.size);
-          addLog(`Successfully optimized asset ${asset.path}`);
-        } catch (error) {
-          addLog(`Error optimizing asset ${asset.path}: ${error instanceof Error ? error.message : String(error)}`);
-          failedAssets.push(assetToProcessedAsset(asset));
-          failed++;
-        }
-      }
-      
+      // Set the final result
       setResult({
-        optimized,
-        skipped,
-        failed,
+        optimized: processResult.optimized,
+        skipped: processResult.skipped,
+        failed: processResult.failed,
         totalAssets: assetCount,
-        optimizedAssets,
-        skippedAssets,
-        failedAssets
+        optimizedAssets: processResult.optimizedAssets,
+        skippedAssets: processResult.skippedAssets,
+        failedAssets: processResult.failedAssets
       });
       
       // Set overall processing stats
-      addLog(`Optimization complete. Optimized: ${optimized}, Skipped: ${skipped}, Failed: ${failed}`);
-      if (optimized > 0) {
-        addLog(`Total size savings: ${formatFileSize(originalSizeTotal - optimizedSizeTotal)} (${Math.round((originalSizeTotal - optimizedSizeTotal) / originalSizeTotal * 100)}%)`);
+      addLog(`Optimization preview complete. Optimized: ${processResult.optimized}, Skipped: ${processResult.skipped}, Failed: ${processResult.failed}`);
+      if (processResult.optimized > 0) {
+        const sizeDifference = processResult.originalSizeTotal - processResult.optimizedSizeTotal;
+        const savingsPercentage = Math.round((sizeDifference / processResult.originalSizeTotal) * 100);
+        addLog(`Total size savings: ${formatFileSize(sizeDifference)} (${savingsPercentage}%)`);
       }
       
       addLog('Asset optimization preview completed!');
@@ -385,116 +554,27 @@ const OptimizeAssetsPage = ({ ctx }: Props) => {
       
       addLog(`Found ${assetCount} assets larger than ${settings.largeAssetThreshold}MB.`);
       addLog(`Found ${optimizableAssets.length} optimizable images.`);
-      setTotal(optimizableAssets.length);
       
-      // Initialize counters and arrays for optimization results
-      let optimized = 0;
-      let skipped = 0;
-      let failed = 0;
-      const optimizedAssets: OptimizedAsset[] = [];
-      const skippedAssets: ProcessedAsset[] = [];
-      const failedAssets: ProcessedAsset[] = [];
-      let originalSizeTotal = 0;
-      let optimizedSizeTotal = 0;
+      // Process assets in parallel
+      const processResult = await processAssetsInParallel(optimizableAssets, false);
       
-      // Process each asset that needs optimization
-      for (let i = 0; i < optimizableAssets.length; i++) {
-        const asset = optimizableAssets[i];
-        setCurrent(i + 1);
-        setCurrentAsset(asset);
-        
-        try {
-          addLog(`Processing asset: ${asset.path} (${formatFileSize(asset.size)})`);
-          originalSizeTotal += asset.size;
-          
-          // Determine optimization parameters based on image type and size
-          const optimizationParams = getOptimizationParams(asset, settings);
-          
-          if (!optimizationParams) {
-            addLog(`Skipping asset ${asset.path}: No suitable optimization parameters found.`);
-            skippedAssets.push(assetToProcessedAsset(asset));
-            skipped++;
-            continue;
-          }
-          
-          // Create URL with optimization parameters
-          const optimizedUrl = `${asset.url}${optimizationParams}`;
-          addLog(`Optimizing with parameters: ${optimizationParams}`);
-          
-          // Fetch the optimized image
-          const response = await fetch(optimizedUrl);
-          if (!response.ok) {
-            throw new Error(`Failed to fetch optimized image: ${response.statusText}`);
-          }
-          
-          const optimizedImageBlob = await response.blob();
-          addLog(`Optimized image size: ${formatFileSize(optimizedImageBlob.size)}`);
-          
-          // Skip if optimized image is not smaller by the minimum reduction percentage
-          const minimumSizeThreshold = asset.size * (1 - settings.minimumReduction / 100);
-          if (optimizedImageBlob.size > minimumSizeThreshold) {
-            addLog(`Optimization not significant enough for ${asset.path}. Skipping.`);
-            skippedAssets.push(assetToProcessedAsset(asset));
-            skipped++;
-            continue;
-          }
-          
-          // Replace the original asset with the optimized one using the DatoCMS API
-          addLog(`Replacing asset ${asset.path}...`);
-          
-          try {
-            // Get the API token from the context
-            const apiToken = ctx.currentUserAccessToken;
-            if (!apiToken) {
-              throw new Error('Failed to get API token');
-            }
-            
-            // Create a URL for the optimized image
-            const optimizedUrl = `${asset.url}${optimizationParams}`;
-            
-            // Use our asset replacement utility to properly replace the asset
-            await replaceAssetFromUrl(
-              asset.id,
-              optimizedUrl,
-              apiToken,
-              ctx.environment,
-              asset.basename
-            );
-            
-            // Add to optimized assets list
-            optimizedAssets.push(assetToOptimizedAsset(asset, asset.size, optimizedImageBlob.size));
-            optimizedSizeTotal += optimizedImageBlob.size;
-            optimized++;
-            
-            // Log the size comparison information
-            addSizeComparisonLog(asset.path, asset.size, optimizedImageBlob.size);
-            addLog(`Successfully replaced asset ${asset.path}`);
-          } catch (error) {
-            addLog(`Error replacing asset: ${error instanceof Error ? error.message : String(error)}`);
-            failedAssets.push(assetToProcessedAsset(asset));
-            failed++;
-          }
-        } catch (error) {
-          addLog(`Error optimizing asset ${asset.path}: ${error instanceof Error ? error.message : String(error)}`);
-          failedAssets.push(assetToProcessedAsset(asset));
-          failed++;
-        }
-      }
-      
+      // Set the final result
       setResult({
-        optimized,
-        skipped,
-        failed,
+        optimized: processResult.optimized,
+        skipped: processResult.skipped,
+        failed: processResult.failed,
         totalAssets: assetCount,
-        optimizedAssets,
-        skippedAssets,
-        failedAssets
+        optimizedAssets: processResult.optimizedAssets,
+        skippedAssets: processResult.skippedAssets,
+        failedAssets: processResult.failedAssets
       });
       
       // Set overall processing stats
-      addLog(`Optimization complete. Optimized: ${optimized}, Skipped: ${skipped}, Failed: ${failed}`);
-      if (optimized > 0) {
-        addLog(`Total size savings: ${formatFileSize(originalSizeTotal - optimizedSizeTotal)} (${Math.round((originalSizeTotal - optimizedSizeTotal) / originalSizeTotal * 100)}%)`);
+      addLog(`Optimization complete. Optimized: ${processResult.optimized}, Skipped: ${processResult.skipped}, Failed: ${processResult.failed}`);
+      if (processResult.optimized > 0) {
+        const sizeDifference = processResult.originalSizeTotal - processResult.optimizedSizeTotal;
+        const savingsPercentage = Math.round((sizeDifference / processResult.originalSizeTotal) * 100);
+        addLog(`Total size savings: ${formatFileSize(sizeDifference)} (${savingsPercentage}%)`);
       }
       
       addLog('Asset optimization process completed!');
