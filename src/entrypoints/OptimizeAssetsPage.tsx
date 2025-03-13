@@ -205,6 +205,7 @@ const OptimizeAssetsPage = ({ ctx }: Props) => {
       // Create DatoCMS client
       const client = buildClient({
         apiToken: ctx.currentUserAccessToken ?? '',
+        environment: ctx.environment
       });
       
       // Fetch all assets from DatoCMS

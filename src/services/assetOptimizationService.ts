@@ -47,6 +47,7 @@ export async function optimizeAssets(
   // Initialize CMA client
   const client = buildClient({
     apiToken: token,
+    environment: ctx.environment
   });
 
   try {
