@@ -14,7 +14,9 @@
     "coverImage": "docs/cover-1200x800.png",
     "previewImage": "docs/preview.mp4",
     "entryPoint": "dist/index.html",
-    "permissions": ["currentUserAccessToken"]
+    "permissions": [
+      "currentUserAccessToken"
+    ]
   },
   "files": [
     "dist",
@@ -27,12 +29,15 @@
     "prepublishOnly": "npm run build"
   },
   "dependencies": {
+    "@datocms/cma-client-browser": "^3.4.5",
     "datocms-plugin-sdk": "^2.0.9",
     "datocms-react-ui": "^2.0.9",
+    "lodash.debounce": "^4.0.8",
     "react": "^18.3.1",
     "react-dom": "^18.3.1"
   },
   "devDependencies": {
+    "@types/lodash.debounce": "^4.0.9",
     "@types/react": "^18.3.3",
     "@types/react-dom": "^18.3.0",
     "@vitejs/plugin-react": "^4.3.1",
