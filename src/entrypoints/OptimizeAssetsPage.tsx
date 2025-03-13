@@ -178,7 +178,7 @@ const OptimizeAssetsPage = ({ ctx }: Props) => {
       // Second confirmation dialog for extra safety
       const finalConfirmResult = await ctx.openConfirm({
         title: 'Final Confirmation Required',
-        content: 'ARE YOU ABSOLUTELY SURE? This will immediately replace your original assets with optimized versions. Your original assets will be PERMANENTLY DELETED and CANNOT be recovered. This may affect the visual quality of your images if not configured correctly.',
+        content: 'ARE YOU ABSOLUTELY SURE? This will immediately replace your original assets with optimized versions. Your original assets will be PERMANENTLY DELETED and CANNOT be recovered. This may affect the visual quality of your images if not configured correctly.\n\nWe STRONGLY RECOMMEND testing this first in a sandbox environment, so you can fine-tune the thresholds and optimization settings to your liking, make sure everything works with your project, and then promote the sandbox environment once you are satisfied with the results.',
         choices: [
           {
             label: 'Yes, Replace My Assets',
@@ -310,6 +310,7 @@ const OptimizeAssetsPage = ({ ctx }: Props) => {
               asset.id,
               optimizedUrl,
               apiToken,
+              ctx.environment,
               asset.basename
             );
             

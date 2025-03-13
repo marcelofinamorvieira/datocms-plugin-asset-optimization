@@ -122,7 +122,7 @@ const AssetList = ({ assets, category, onClose, ctx }: AssetListProps): ReactEle
                       buttonSize="xxs"
                       buttonType="muted"
                       style={{ marginLeft: '8px' }}
-                      onClick={() => window.open(`https://${ctx.site.attributes.internal_domain}/media/assets/${displayAsset.id}`, '_blank')}
+                      onClick={() => window.open(`https://${ctx.site.attributes.internal_domain}/environments/${ctx.environment}/media/assets/${displayAsset.id}`, '_blank')}
                     >
                       Media Area
                     </Button>

@@ -53,27 +53,30 @@ interface JobResultResponse {
 }
 
 /**
- * Polls a job result endpoint until the job is complete
+ * Waits for a job to complete by polling the job result endpoint.
  * 
  * @param {string} jobId - The ID of the job to check
  * @param {string} apiToken - DatoCMS API token
- * @param {number} maxAttempts - Maximum number of polling attempts
- * @param {number} interval - Polling interval in milliseconds
+ * @param {string} environment - Environment for the DatoCMS API call
+ * @param {number} [maxAttempts=60] - Maximum number of polling attempts
+ * @param {number} [interval=2000] - Polling interval in milliseconds
  * @returns {Promise<JobResultResponse>} The final job result
  * @throws {Error} If the job fails or times out
  */
 async function waitForJobCompletion(
   jobId: string,
   apiToken: string,
+  environment: string,
   maxAttempts = 60,
   interval = 2000
 ): Promise<JobResultResponse> {
   const baseUrl = 'https://site-api.datocms.com';
-  const headers = {
+  const headers: Record<string, string> = {
     'Authorization': `Bearer ${apiToken}`,
     'Content-Type': 'application/json',
     'Accept': 'application/json',
     'X-Api-Version': '3',  
+    'X-Environment': environment
   };
   
   let attempts = 0;
@@ -82,30 +85,38 @@ async function waitForJobCompletion(
     attempts++;
     
     try {
+      console.log(`Checking job status (attempt ${attempts}/${maxAttempts}): ${jobId}`);
+      
       const response = await fetch(`${baseUrl}/job-results/${jobId}`, {
-        headers
+        method: 'GET',
+        headers,
       });
       
-      if (response.status === 200) {
-        const result = await response.json() as JobResultResponse;
-        if (result.data.attributes?.status === 200) {
-          console.log(`Job ${jobId} completed successfully`);
-          return result;
-        }
+      if (!response.ok) {
+        const errorText = await response.text();
+        throw new Error(`API error: ${response.status} ${errorText}`);
       }
       
-      // If we got a 404 or any other status, the job is still processing
-      console.log(`Job ${jobId} still processing (attempt ${attempts}/${maxAttempts})...`);
+      const jobResult = await response.json() as JobResultResponse;
       
-      // Wait before trying again
+      // Check if the job has completed
+      if (jobResult.data.attributes && jobResult.data.attributes.status === 200) {
+        console.log(`Job completed successfully: ${jobId}`);
+        return jobResult;
+      }
+      
+      // If we get here, the job is still processing
+      console.log(`Job in progress (${attempts}/${maxAttempts}), waiting ${interval}ms...`);
       await new Promise(resolve => setTimeout(resolve, interval));
+      
     } catch (error) {
-      console.error(`Error checking job status: ${error}`);
-      // Continue trying despite error
+      console.error(`Error checking job status: ${error instanceof Error ? error.message : String(error)}`);
+      // Wait before retrying
+      await new Promise(resolve => setTimeout(resolve, interval));
     }
   }
   
-  throw new Error(`Job ${jobId} did not complete after ${maxAttempts} attempts`);
+  throw new Error(`Job timed out after ${maxAttempts} attempts: ${jobId}`);
 }
 
 /**
@@ -114,6 +125,7 @@ async function waitForJobCompletion(
  * @param {string} assetId - The ID of the asset to replace
  * @param {string} newImageUrl - URL of the new image to replace the original with
  * @param {string} apiToken - DatoCMS API token
+ * @param {string} environment - Environment for the DatoCMS API call
  * @param {string} [filename] - Optional custom filename for the replacement
  * @returns {Promise<AssetUpdateResponse>} The updated asset object from DatoCMS
  * @throws {Error} If the replacement fails
@@ -122,6 +134,7 @@ async function replaceAssetFromUrl(
   assetId: string,
   newImageUrl: string,
   apiToken: string,
+  environment: string,
   filename?: string
 ): Promise<AssetUpdateResponse> {
   console.log(`Replacing DatoCMS asset ID ${assetId} with image from URL: ${newImageUrl}`);
@@ -132,11 +145,12 @@ async function replaceAssetFromUrl(
   
   try {
     const baseUrl = 'https://site-api.datocms.com';
-    const headers = {
+    const headers: Record<string, string> = {
       'Authorization': `Bearer ${apiToken}`,
       'Content-Type': 'application/json',
       'Accept': 'application/json',
       'X-Api-Version': '3',  
+      'X-Environment': environment
     };
 
     // Step 1: Create an upload request to get a pre-signed S3 URL
@@ -221,7 +235,7 @@ async function replaceAssetFromUrl(
       console.log(`Asset update initiated as job ${jobId}, waiting for completion...`);
       
       // Wait for the job to complete
-      const jobResult = await waitForJobCompletion(jobId, apiToken);
+      const jobResult = await waitForJobCompletion(jobId, apiToken, environment);
       
       if (jobResult.data.attributes?.status !== 200) {
         throw new Error(`Job completed with error status: ${jobResult.data.attributes?.status}`);

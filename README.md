@@ -15,6 +15,10 @@ The DatoCMS Asset Optimization Plugin leverages Imgix's powerful image processin
 - Track optimization progress with detailed logs
 - View statistics on storage savings
 
+## Preview
+
+https://github.com/marcelofinamorvieira/datocms-plugin-asset-optimization/raw/main/docs/preview.mp4
+
 ## Installation
 
 1. Log in to your DatoCMS project
@@ -22,6 +26,20 @@ The DatoCMS Asset Optimization Plugin leverages Imgix's powerful image processin
 3. Search for "Asset Optimization"
 4. Click "Install"
 5. Configure the plugin settings as desired
+
+## Important: Use Sandbox Environments First
+
+⚠️ **STRONGLY RECOMMENDED**: Always test this plugin in a sandbox environment before using it in production.
+
+This plugin permanently replaces your original assets and they cannot be recovered. To ensure optimal results:
+
+1. Create a sandbox environment in your DatoCMS project
+2. Test the plugin with various optimization settings
+3. Fine-tune thresholds and quality settings to your liking
+4. Verify the optimized assets meet your quality standards
+5. Once satisfied with the results, promote your changes to production
+
+This approach allows you to safely experiment with different optimization parameters without risking your production assets.
 
 ## Usage
 
