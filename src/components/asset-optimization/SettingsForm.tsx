@@ -7,6 +7,7 @@ import { useEffect, useRef } from 'react';
 import debounce from 'lodash.debounce';
 import type { ActionMeta, SingleValue, MultiValue } from 'react-select';
 import ParamTooltip from './ParamTooltip';
+import ButtonTooltip from './ButtonTooltip';
 
 /**
  * Hint with doc link component
@@ -58,6 +59,7 @@ interface SettingsFormProps {
   settings: OptimizationSettings;
   onSettingsChange: (newSettings: OptimizationSettings) => void;
   onStartOptimization: () => void;
+  onPreviewOptimization: () => void;
   ctx: RenderPageCtx; // Added ctx to access updatePluginParameters
 }
 
@@ -70,10 +72,11 @@ interface SettingsFormProps {
  * @param settings - Current optimization settings
  * @param onSettingsChange - Callback for when settings change
  * @param onStartOptimization - Callback for when the start button is clicked
+ * @param onPreviewOptimization - Callback for when the preview button is clicked
  * @param ctx - DatoCMS SDK context
  * @returns Rendered form component
  */
-const SettingsForm = ({ settings, onSettingsChange, onStartOptimization, ctx }: SettingsFormProps) => {
+const SettingsForm = ({ settings, onSettingsChange, onStartOptimization, onPreviewOptimization, ctx }: SettingsFormProps) => {
   // Create debounced function for saving settings to plugin parameters
   const debouncedSaveSettings = useRef<((settings: OptimizationSettings) => void) | null>(null);
 
@@ -410,6 +413,15 @@ const SettingsForm = ({ settings, onSettingsChange, onStartOptimization, ctx }: 
           >
             Restore Defaults
           </Button>
+          <ButtonTooltip tooltip="Calculate potential improvements with current settings without replacing any assets">
+            <Button 
+              buttonType="muted" 
+              buttonSize="l" 
+              onClick={onPreviewOptimization}
+            >
+              Preview Optimization
+            </Button>
+          </ButtonTooltip>
           <Button 
             buttonType="primary" 
             buttonSize="l" 

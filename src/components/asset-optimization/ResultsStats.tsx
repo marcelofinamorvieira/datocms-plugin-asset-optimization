@@ -11,6 +11,7 @@ interface ResultsStatsProps {
   setSelectedCategory: (category: 'optimized' | 'skipped' | 'failed' | null) => void;
   resetState?: () => void;
   largeAssetThreshold?: number;
+  isPreview: boolean; // Update the prop type to make it required
 }
 
 /**
@@ -28,7 +29,8 @@ const ResultsStats = ({
   result,
   setSelectedCategory,
   resetState,
-  largeAssetThreshold
+  largeAssetThreshold,
+  isPreview
 }: ResultsStatsProps): ReactElement | null => {
   if (!result) return null;
   
@@ -77,7 +79,21 @@ const ResultsStats = ({
   
   return (
     <div className={s.resultsContainer}>
-      <h2 className={s.optimizationSummaryTitle}>Optimization Summary</h2>
+      <h2 className={s.optimizationSummaryTitle}>
+        {isPreview ? 'Preview Summary' : 'Optimization Summary'}
+      </h2>
+      
+      {isPreview && (
+        <div className={s.previewInfoBox}>
+          <svg width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+            <title>Information</title>
+            <path d="M12 22C6.477 22 2 17.523 2 12C2 6.477 6.477 2 12 2C17.523 2 22 6.477 22 12C22 17.523 17.523 22 12 22ZM12 20C16.4183 20 20 16.4183 20 12C20 7.58172 16.4183 4 12 4C7.58172 4 4 7.58172 4 12C4 16.4183 7.58172 20 12 20ZM11 7H13V9H11V7ZM11 11H13V17H11V11Z" fill="currentColor"/>
+          </svg>
+          <p>
+            <strong>Preview Mode</strong> - This is an estimation of potential savings. No assets have been modified.
+          </p>
+        </div>
+      )}
       
       {totalAssets === 0 && largeAssetThreshold && (
         <div className={`${s.infoBox}`} style={{ margin: '0 0 16px 0', padding: '16px', backgroundColor: 'var(--light-bg-color)', borderRadius: '4px' }}>
@@ -171,7 +187,7 @@ const ResultsStats = ({
           onClick={handleNewOptimization}
           fullWidth
         >
-          New Optimization
+          {isPreview ? 'New Preview' : 'New Optimization'}
         </Button>
       </div>
     </div>

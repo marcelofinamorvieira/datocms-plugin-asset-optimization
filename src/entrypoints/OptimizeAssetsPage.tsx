@@ -78,6 +78,8 @@ type Props = {
 const OptimizeAssetsPage = ({ ctx }: Props) => {
   // UI state management
   const [isOptimizing, setIsOptimizing] = useState(false);
+  const [isPreviewing, setIsPreviewing] = useState(false);
+  const [isProcessing, setIsProcessing] = useState(false);
   const [current, setCurrent] = useState(0);
   const [total, setTotal] = useState(0);
   const [result, setResult] = useState<AssetOptimizerResult | null>(null);
@@ -149,6 +151,150 @@ const OptimizeAssetsPage = ({ ctx }: Props) => {
   };
 
   /**
+   * Start a preview of the optimization process (no actual asset replacement)
+   */
+  const startPreview = async () => {
+    try {
+      // Reset any previous results
+      resetState();
+      setIsPreviewing(true);
+      setIsProcessing(true);
+      addLog('Starting asset optimization preview...');
+      
+      // Create DatoCMS client
+      const client = buildClient({
+        apiToken: ctx.currentUserAccessToken ?? '',
+        environment: ctx.environment
+      });
+      
+      // Fetch all assets from DatoCMS
+      addLog('Fetching assets from DatoCMS for preview...');
+      
+      // Calculate size threshold in bytes (convert MB to bytes)
+      const largeAssetThresholdBytes = settings.largeAssetThreshold * 1024 * 1024;
+      
+      // Use listPagedIterator to properly retrieve all uploads with pagination
+      const optimizableAssets: Asset[] = [];
+      let assetCount = 0;
+      
+      // Iterate through all pages of upload results with size filter
+      for await (const upload of client.uploads.listPagedIterator({
+        filter: {
+          fields: {
+            type: {
+              eq: "image"
+            },
+            size: {
+              gte: largeAssetThresholdBytes
+            }
+          }
+        }
+      })) {
+        assetCount++;
+        // We can now skip the size check since we're filtering by API
+        optimizableAssets.push(uploadToAsset(upload));
+      }
+      
+      addLog(`Found ${assetCount} assets larger than ${settings.largeAssetThreshold}MB.`);
+      addLog(`Found ${optimizableAssets.length} optimizable images.`);
+      setTotal(optimizableAssets.length);
+      
+      // Initialize counters and arrays for optimization results
+      let optimized = 0;
+      let skipped = 0;
+      let failed = 0;
+      const optimizedAssets: OptimizedAsset[] = [];
+      const skippedAssets: ProcessedAsset[] = [];
+      const failedAssets: ProcessedAsset[] = [];
+      let originalSizeTotal = 0;
+      let optimizedSizeTotal = 0;
+      
+      // Process each asset that needs optimization
+      for (let i = 0; i < optimizableAssets.length; i++) {
+        const asset = optimizableAssets[i];
+        setCurrent(i + 1);
+        setCurrentAsset(asset);
+        
+        try {
+          addLog(`Processing asset: ${asset.path} (${formatFileSize(asset.size)})`);
+          originalSizeTotal += asset.size;
+          
+          // Determine optimization parameters based on image type and size
+          const optimizationParams = getOptimizationParams(asset, settings);
+          
+          if (!optimizationParams) {
+            addLog(`Skipping asset ${asset.path}: No suitable optimization parameters found.`);
+            skippedAssets.push(assetToProcessedAsset(asset));
+            skipped++;
+            continue;
+          }
+          
+          // Create URL with optimization parameters
+          const optimizedUrl = `${asset.url}${optimizationParams}`;
+          addLog(`Optimizing with parameters: ${optimizationParams}`);
+          
+          // Fetch the optimized image
+          const response = await fetch(optimizedUrl);
+          if (!response.ok) {
+            throw new Error(`Failed to fetch optimized image: ${response.statusText}`);
+          }
+          
+          const optimizedImageBlob = await response.blob();
+          addLog(`Optimized image size: ${formatFileSize(optimizedImageBlob.size)}`);
+          
+          // Skip if optimized image is not smaller by the minimum reduction percentage
+          const minimumSizeThreshold = asset.size * (1 - settings.minimumReduction / 100);
+          if (optimizedImageBlob.size > minimumSizeThreshold) {
+            addLog(`Optimization not significant enough for ${asset.path}. Skipping.`);
+            skippedAssets.push(assetToProcessedAsset(asset));
+            skipped++;
+            continue;
+          }
+          
+          // Add to optimized assets list
+          optimizedAssets.push(assetToOptimizedAsset(asset, asset.size, optimizedImageBlob.size));
+          optimizedSizeTotal += optimizedImageBlob.size;
+          optimized++;
+          
+          // Log the size comparison information
+          addSizeComparisonLog(asset.path, asset.size, optimizedImageBlob.size);
+          addLog(`Successfully optimized asset ${asset.path}`);
+        } catch (error) {
+          addLog(`Error optimizing asset ${asset.path}: ${error instanceof Error ? error.message : String(error)}`);
+          failedAssets.push(assetToProcessedAsset(asset));
+          failed++;
+        }
+      }
+      
+      setResult({
+        optimized,
+        skipped,
+        failed,
+        totalAssets: assetCount,
+        optimizedAssets,
+        skippedAssets,
+        failedAssets
+      });
+      
+      // Set overall processing stats
+      addLog(`Optimization complete. Optimized: ${optimized}, Skipped: ${skipped}, Failed: ${failed}`);
+      if (optimized > 0) {
+        addLog(`Total size savings: ${formatFileSize(originalSizeTotal - optimizedSizeTotal)} (${Math.round((originalSizeTotal - optimizedSizeTotal) / originalSizeTotal * 100)}%)`);
+      }
+      
+      addLog('Asset optimization preview completed!');
+      ctx.notice('Asset optimization preview completed!');
+      
+    } catch (error) {
+      addLog(`Error during optimization preview: ${error instanceof Error ? error.message : String(error)}`);
+      ctx.alert(`Error during optimization preview: ${error instanceof Error ? error.message : String(error)}`);
+      setIsPreviewing(false); // Only set to false on error
+    } finally {
+      setIsProcessing(false);
+    }
+  };
+
+  /**
    * Start the optimization process
    */
   const startOptimization = async () => {
@@ -200,6 +346,7 @@ const OptimizeAssetsPage = ({ ctx }: Props) => {
       // Reset any previous results
       resetState();
       setIsOptimizing(true);
+      setIsProcessing(true);
       addLog('Starting asset optimization process...');
       
       // Create DatoCMS client
@@ -358,10 +505,14 @@ const OptimizeAssetsPage = ({ ctx }: Props) => {
       ctx.alert(`Error during optimization process: ${error instanceof Error ? error.message : String(error)}`);
     } finally {
       setIsOptimizing(false);
+      setIsProcessing(false);
     }
   };
   
   const resetState = () => {
+    setIsOptimizing(false);
+    setIsPreviewing(false);
+    setIsProcessing(false);
     setResult(null);
     setLogEntries([]);
     setCurrent(0);
@@ -375,12 +526,13 @@ const OptimizeAssetsPage = ({ ctx }: Props) => {
         <h1 className={s.title}>Asset Optimization</h1>
         
         {/* Settings Form */}
-        {!isOptimizing && !result && (
+        {!isProcessing && !result && (
           <div className={s.settingsContainer}>
             <SettingsForm 
               settings={settings} 
               onSettingsChange={setSettings} 
               onStartOptimization={startOptimization}
+              onPreviewOptimization={startPreview}
               ctx={ctx}
             />
           </div>
@@ -390,9 +542,10 @@ const OptimizeAssetsPage = ({ ctx }: Props) => {
         <ProgressIndicator 
           current={current} 
           total={total} 
-          isVisible={isOptimizing}
+          isVisible={isProcessing}
           assetSizeCategory={settings.veryLargeAssetThreshold > 0 ? 'large and very large' : 'large'}
           currentAsset={currentAsset}
+          isPreview={isPreviewing}
         />
         
         {/* Results Statistics */}
@@ -403,6 +556,7 @@ const OptimizeAssetsPage = ({ ctx }: Props) => {
               setSelectedCategory={setSelectedCategory}
               resetState={resetState}
               largeAssetThreshold={settings.largeAssetThreshold}
+              isPreview={isPreviewing}
             />
             
             {/* Asset List showing optimized/skipped/failed assets */}

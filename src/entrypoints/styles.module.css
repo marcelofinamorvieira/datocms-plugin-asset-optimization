@@ -680,14 +680,20 @@
 @media (min-width: 600px) {
   .buttonGroup {
     flex-direction: row;
+    flex-wrap: wrap;
+    justify-content: space-between;
   }
   
   .buttonGroup > button:first-child {
     flex: 1;
   }
   
+  .buttonGroup > button:nth-child(2) {
+    flex: 2;
+  }
+  
   .buttonGroup > button:last-child {
-    flex: 3;
+    flex: 2;
   }
 }
 
@@ -1087,4 +1093,71 @@
 .paramTooltip:hover .tooltipText {
   visibility: visible;
   opacity: 1;
+}
+
+.buttonTooltip {
+  position: relative;
+  display: inline-block;
+}
+
+.buttonTooltip .tooltipText {
+  visibility: hidden;
+  min-width: 200px;
+  max-width: 300px;
+  background-color: rgba(0, 0, 0, 0.8);
+  color: #fff;
+  text-align: center;
+  border-radius: 4px;
+  padding: var(--spacing-s) var(--spacing-m);
+  position: absolute;
+  z-index: 1;
+  bottom: 125%;
+  left: 50%;
+  transform: translateX(-50%);
+  opacity: 0;
+  transition: opacity 0.3s;
+  font-size: var(--font-size-xs);
+  line-height: 1.5;
+  pointer-events: none;
+}
+
+.buttonTooltip .tooltipText::after {
+  content: "";
+  position: absolute;
+  top: 100%;
+  left: 50%;
+  margin-left: -5px;
+  border-width: 5px;
+  border-style: solid;
+  border-color: rgba(0, 0, 0, 0.8) transparent transparent transparent;
+}
+
+.buttonTooltip:hover .tooltipText {
+  visibility: visible;
+  opacity: 1;
+}
+
+/* Preview info box for progress indicator */
+.previewInfoBox {
+  width: 100%;
+  margin-bottom: var(--spacing-m);
+  padding: var(--spacing-m);
+  background-color: var(--light-bg-color);
+  border-radius: 8px;
+  border: 1px solid var(--border-color);
+  display: flex;
+  align-items: center;
+}
+
+.previewInfoBox svg {
+  margin-right: var(--spacing-s);
+  color: var(--accent-color);
+  flex-shrink: 0;
+}
+
+.previewInfoBox p {
+  margin: 0;
+  color: var(--base-body-color);
+  font-size: var(--font-size-s);
+  line-height: 1.5;
 }
