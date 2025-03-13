@@ -15,10 +15,6 @@ The DatoCMS Asset Optimization Plugin leverages Imgix's powerful image processin
 - Track optimization progress with detailed logs
 - View statistics on storage savings
 
-## Preview
-
-https://github.com/marcelofinamorvieira/datocms-plugin-asset-optimization/raw/main/docs/preview.mp4
-
 ## Installation
 
 1. Log in to your DatoCMS project
