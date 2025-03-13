@@ -33,12 +33,88 @@ interface AssetUpdateResponse {
 }
 
 /**
+ * Interface for the job result response from DatoCMS
+ */
+interface JobResultResponse {
+  data: {
+    type: string;
+    id: string;
+    attributes?: {
+      status: number;
+      payload: {
+        data: {
+          type: string;
+          id: string;
+          attributes: Record<string, unknown>;
+        };
+      };
+    };
+  };
+}
+
+/**
+ * Polls a job result endpoint until the job is complete
+ * 
+ * @param {string} jobId - The ID of the job to check
+ * @param {string} apiToken - DatoCMS API token
+ * @param {number} maxAttempts - Maximum number of polling attempts
+ * @param {number} interval - Polling interval in milliseconds
+ * @returns {Promise<JobResultResponse>} The final job result
+ * @throws {Error} If the job fails or times out
+ */
+async function waitForJobCompletion(
+  jobId: string,
+  apiToken: string,
+  maxAttempts = 60,
+  interval = 2000
+): Promise<JobResultResponse> {
+  const baseUrl = 'https://site-api.datocms.com';
+  const headers = {
+    'Authorization': `Bearer ${apiToken}`,
+    'Content-Type': 'application/json',
+    'Accept': 'application/json',
+    'X-Api-Version': '3',  
+  };
+  
+  let attempts = 0;
+  
+  while (attempts < maxAttempts) {
+    attempts++;
+    
+    try {
+      const response = await fetch(`${baseUrl}/job-results/${jobId}`, {
+        headers
+      });
+      
+      if (response.status === 200) {
+        const result = await response.json() as JobResultResponse;
+        if (result.data.attributes?.status === 200) {
+          console.log(`Job ${jobId} completed successfully`);
+          return result;
+        }
+      }
+      
+      // If we got a 404 or any other status, the job is still processing
+      console.log(`Job ${jobId} still processing (attempt ${attempts}/${maxAttempts})...`);
+      
+      // Wait before trying again
+      await new Promise(resolve => setTimeout(resolve, interval));
+    } catch (error) {
+      console.error(`Error checking job status: ${error}`);
+      // Continue trying despite error
+    }
+  }
+  
+  throw new Error(`Job ${jobId} did not complete after ${maxAttempts} attempts`);
+}
+
+/**
  * Replaces an existing asset in DatoCMS with a new image from a URL.
  * 
  * @param {string} assetId - The ID of the asset to replace
  * @param {string} newImageUrl - URL of the new image to replace the original with
- * @param {string} [filename] - Optional custom filename for the replacement
  * @param {string} apiToken - DatoCMS API token
+ * @param {string} [filename] - Optional custom filename for the replacement
  * @returns {Promise<AssetUpdateResponse>} The updated asset object from DatoCMS
  * @throws {Error} If the replacement fails
  */
@@ -136,9 +212,27 @@ async function replaceAssetFromUrl(
       throw new Error(`Failed to update asset metadata: ${updateResponse.status} ${errorText}`);
     }
 
-    const result = await updateResponse.json() as AssetUpdateResponse;
-    console.log('Asset replaced successfully:', result);
-    return result;
+    // Step 5: If we received a job ID, wait for the job to complete
+    const responseData = await updateResponse.json();
+    
+    if (responseData.data && responseData.data.type === 'job') {
+      // We got a job ID instead of the completed upload, need to wait for job completion
+      const jobId = responseData.data.id;
+      console.log(`Asset update initiated as job ${jobId}, waiting for completion...`);
+      
+      // Wait for the job to complete
+      const jobResult = await waitForJobCompletion(jobId, apiToken);
+      
+      if (jobResult.data.attributes?.status !== 200) {
+        throw new Error(`Job completed with error status: ${jobResult.data.attributes?.status}`);
+      }
+      
+      // Return the upload data from the job result
+      return jobResult.data.attributes.payload as AssetUpdateResponse;
+    }
+
+    console.log('Asset replaced successfully:', responseData);
+    return responseData as AssetUpdateResponse;
   } catch (error) {
     console.error('Error replacing asset:', error);
     throw error;

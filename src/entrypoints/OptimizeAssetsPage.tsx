@@ -153,6 +153,50 @@ const OptimizeAssetsPage = ({ ctx }: Props) => {
    */
   const startOptimization = async () => {
     try {
+      // Ask for confirmation before proceeding with optimization
+      const confirmResult = await ctx.openConfirm({
+        title: 'Confirm Asset Optimization',
+        content: 'WARNING: This is a destructive action that will permanently replace all assets that fall into the optimization thresholds. This action is non-reversible and original assets cannot be recovered once replaced. Are you sure you want to proceed?',
+        choices: [
+          {
+            label: 'Proceed to Final Confirmation',
+            value: 'confirm',
+            intent: 'positive',
+          }
+        ],
+        cancel: {
+          label: 'Cancel',
+          value: false,
+        },
+      });
+
+      // If the user didn't confirm, return early
+      if (confirmResult !== 'confirm') {
+        return;
+      }
+      
+      // Second confirmation dialog for extra safety
+      const finalConfirmResult = await ctx.openConfirm({
+        title: 'Final Confirmation Required',
+        content: 'ARE YOU ABSOLUTELY SURE? This will immediately replace your original assets with optimized versions. Your original assets will be PERMANENTLY DELETED and CANNOT be recovered. This may affect the visual quality of your images if not configured correctly.',
+        choices: [
+          {
+            label: 'Yes, Replace My Assets',
+            value: 'confirm',
+            intent: 'positive',
+          }
+        ],
+        cancel: {
+          label: 'No, Cancel Operation',
+          value: false,
+        },
+      });
+      
+      // If the user didn't confirm the second dialog, return early
+      if (finalConfirmResult !== 'confirm') {
+        return;
+      }
+
       // Reset any previous results
       resetState();
       setIsOptimizing(true);
