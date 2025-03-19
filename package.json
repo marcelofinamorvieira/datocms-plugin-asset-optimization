@@ -3,7 +3,7 @@
   "description": "A plugin that allows you to mass apply optimizations to your DatoCMS assets.",
   "homepage": "https://github.com/marcelofinamorvieira/datocms-plugin-asset-optimization",
   "private": false,
-  "version": "0.6.0",
+  "version": "0.7.0",
   "author": "marcelofinamorvieira <marcelofinamorvieira@gmail.com>",
   "type": "module",
   "keywords": [
